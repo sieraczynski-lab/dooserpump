@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ReefDosePump</title>
+<style>
+  :root {
+    --bg:       #0d1b2a;
+    --surface:  #1b2d42;
+    --border:   #2e4a6a;
+    --accent:   #00b4d8;
+    --accent2:  #0077b6;
+    --green:    #2ec4b6;
+    --red:      #e63946;
+    --text:     #e0f0ff;
+    --muted:    #7fa8cc;
+    --radius:   12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text);
+         min-height: 100vh; }
+
+  /* ── Header ───────────────────────────────────────────── */
+  header { background: var(--surface); border-bottom: 1px solid var(--border);
+           padding: 14px 20px; display: flex; align-items: center; gap: 12px;
+           position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 1.2rem; color: var(--accent); flex: 1; }
+  #wifi-badge { font-size: .8rem; padding: 4px 10px; border-radius: 20px;
+                background: var(--border); color: var(--muted); }
+  #wifi-badge.ok { background: #0a4a3a; color: var(--green); }
+  #mqtt-badge { font-size: .8rem; padding: 4px 10px; border-radius: 20px;
+                background: var(--border); color: var(--muted); }
+  #mqtt-badge.ok { background: #0a2a4a; color: var(--accent); }
+
+  /* ── Tabs ─────────────────────────────────────────────── */
+  nav { display: flex; background: var(--surface); border-bottom: 1px solid var(--border); }
+  nav button { flex: 1; padding: 12px; background: none; border: none; color: var(--muted);
+               font-size: .95rem; cursor: pointer; border-bottom: 3px solid transparent;
+               transition: .2s; }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ── Main ─────────────────────────────────────────────── */
+  main { padding: 20px; max-width: 900px; margin: 0 auto; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+
+  /* ── Pump cards ───────────────────────────────────────── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+          padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .card.running { border-color: var(--green); box-shadow: 0 0 8px #2ec4b620; }
+  .card.disabled { opacity: .5; }
+
+  .card-header { display: flex; align-items: center; justify-content: space-between; }
+  .pump-name { font-size: 1rem; font-weight: 600; }
+  .pump-idx  { font-size: .75rem; color: var(--muted); background: var(--border);
+               padding: 2px 7px; border-radius: 10px; }
+
+  .progress-wrap { background: var(--border); border-radius: 99px; height: 8px; overflow: hidden; }
+  .progress-bar  { height: 8px; border-radius: 99px; background: var(--accent);
+                   transition: width .5s; }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .stat  { text-align: center; }
+  .stat-val  { font-size: 1.1rem; font-weight: 700; color: var(--accent); }
+  .stat-lbl  { font-size: .7rem; color: var(--muted); margin-top: 2px; }
+
+  .card-actions { display: flex; gap: 8px; }
+  .btn { padding: 8px 14px; border-radius: 8px; border: none; cursor: pointer;
+         font-size: .85rem; font-weight: 600; flex: 1; transition: .15s; }
+  .btn-primary { background: var(--accent2); color: #fff; }
+  .btn-primary:hover { background: var(--accent); }
+  .btn-danger  { background: var(--red); color: #fff; }
+  .btn-danger:hover { filter: brightness(1.15); }
+  .btn-ghost   { background: var(--border); color: var(--text); }
+  .btn-ghost:hover { background: var(--accent2); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  .last-dose { font-size: .72rem; color: var(--muted); text-align: center; }
+
+  /* ── Dose input ───────────────────────────────────────── */
+  .dose-row { display: flex; gap: 6px; align-items: center; }
+  .dose-row input { flex: 1; padding: 7px 10px; border-radius: 8px;
+                    background: var(--border); border: 1px solid var(--border);
+                    color: var(--text); font-size: .9rem; }
+  .dose-row input:focus { outline: 2px solid var(--accent); }
+
+  /* ── Settings form ────────────────────────────────────── */
+  .section { background: var(--surface); border: 1px solid var(--border);
+             border-radius: var(--radius); padding: 20px; margin-bottom: 20px; }
+  .section h2 { font-size: 1rem; color: var(--accent); margin-bottom: 16px; }
+
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--muted); }
+  input[type=text], input[type=password], input[type=number] {
+    padding: 9px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); font-size: .9rem; }
+  input:focus { outline: 2px solid var(--accent); }
+  .toggle-wrap { display: flex; align-items: center; gap: 10px; }
+  input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+
+  .form-actions { margin-top: 18px; display: flex; gap: 10px; }
+
+  /* ── Calibration ─────────────────────────────────────── */
+  #cal-status { font-size: .9rem; color: var(--green); min-height: 1.4em; }
+  #cal-pulses { font-size: 1.2rem; font-weight: 700; color: var(--accent); }
+
+  /* ── Alert toast ─────────────────────────────────────── */
+  #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+           background: var(--green); color: #fff; padding: 12px 24px; border-radius: 10px;
+           font-weight: 600; transition: transform .3s; z-index: 99; }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #toast.err  { background: var(--red); }
+  /* ── Log viewer ───────────────────────────────────── */
+  #log-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  #log-filter  { flex:1; min-width:120px; padding:7px 10px; border-radius:8px;
+                 background:var(--border); border:1px solid var(--border);
+                 color:var(--text); font-size:.85rem; }
+  #log-filter:focus { outline:2px solid var(--accent); }
+  #log-box { background:#0a1520; border:1px solid var(--border); border-radius:var(--radius);
+             padding:12px; height:420px; overflow-y:auto; font-family:monospace;
+             font-size:.82rem; line-height:1.55; white-space:pre-wrap; word-break:break-all; }
+  .ll { color:#7fa8cc; }
+  .lw { color:#f4a261; }
+  .le { color:var(--red); }
+  #ws-badge { font-size:.78rem; padding:3px 9px; border-radius:14px;
+              background:var(--border); color:var(--muted); }
+  #ws-badge.ok  { background:#0a4a3a; color:var(--green); }
+  #ws-badge.err { background:#4a0a0a; color:var(--red); }
+  /* ── Spinner ─────────────────────────────────────────── */
+  .running-badge { font-size: .75rem; color: var(--green); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🐠 ReefDosePump</h1>
+  <span id="wifi-badge">WiFi…</span>
+  <span id="mqtt-badge">MQTT…</span>
+</header>
+
+<nav>
+  <button class="active" onclick="showTab('dashboard')">Dashboard</button>
+  <button onclick="showTab('settings')">Ustawienia</button>
+  <button onclick="showTab('calibration')">Kalibracja</button>
+  <button onclick="showTab('log')">Logi</button>
+</nav>
+
+<main>
+
+<!-- ═══════════════════════════════════════════════════════ DASHBOARD -->
+<div id="tab-dashboard" class="tab active">
+  <div class="cards" id="pump-cards">
+    <!-- generowane przez JS -->
+  </div>
+  <p style="margin-top:16px;font-size:.8rem;color:var(--muted);text-align:right"
+     id="last-update">odświeżanie…</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ SETTINGS -->
+<div id="tab-settings" class="tab">
+
+  <!-- Sieć -->
+  <div class="section">
+    <h2>📡 Sieć WiFi</h2>
+    <div class="form-grid">
+      <label>SSID <input id="s-ssid" type="text" placeholder="Nazwa sieci"></label>
+      <label>Hasło WiFi <input id="s-wpass" type="password" placeholder="(bez zmiany)"></label>
+      <label>Statyczne IP <input id="s-ip" type="text" placeholder="np. 192.168.1.50"></label>
+      <label>Brama <input id="s-gw" type="text" placeholder="np. 192.168.1.1"></label>
+    </div>
+  </div>
+
+  <!-- MQTT -->
+  <div class="section">
+    <h2>📨 MQTT / Home Assistant</h2>
+    <div class="form-grid">
+      <label>Broker IP/host <input id="s-mhost" type="text" placeholder="np. 192.168.1.10"></label>
+      <label>Port <input id="s-mport" type="number" min="1" max="65535" value="1883"></label>
+      <label>Użytkownik <input id="s-muser" type="text"></label>
+      <label>Hasło MQTT <input id="s-mpass" type="password" placeholder="(bez zmiany)"></label>
+      <label>Bazowy temat <input id="s-mtopic" type="text" placeholder="reef/dosepump"></label>
+    </div>
+  </div>
+
+  <!-- Panel WWW -->
+  <div class="section">
+    <h2>🔐 Panel WWW</h2>
+    <div class="form-grid">
+      <label>Użytkownik <input id="s-wuser" type="text"></label>
+      <label>Hasło panelu <input id="s-wpwd" type="password" placeholder="(bez zmiany)"></label>
+    </div>
+  </div>
+
+  <!-- Harmonogram -->
+  <div class="section">
+    <h2>⏰ Harmonogram</h2>
+    <div class="form-grid">
+      <label>Offset między pompami (min)
+        <input id="s-interval" type="number" min="0" max="60" value="15">
+      </label>
+    </div>
+    <p style="font-size:.8rem;color:var(--muted);margin-top:8px">
+      Po podaniu dawki przez którąkolwiek pompę następna może ruszyć dopiero po tym czasie.
+      Zapobiega mieszaniu się preparatów (np. KH Buffer + Calcium).
+    </p>
+  </div>
+
+  <!-- Pompy -->
+  <div class="section">
+    <h2>⚙️ Konfiguracja pomp</h2>
+    <div id="pump-settings">
+      <!-- generowane przez JS -->
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button class="btn btn-primary" onclick="saveSettings()">💾 Zapisz</button>
+    <button class="btn btn-ghost"   onclick="loadSettings()">↺ Odśwież</button>
+    <button class="btn btn-danger"  onclick="restartDevice()">⚡ Restart</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ CALIBRATION -->
+<div id="tab-calibration" class="tab">
+  <div class="section">
+    <h2>🔬 Kalibracja przepływu</h2>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:18px">
+      Wybierz pompę, uruchom, podstaw menzurkę, zatrzymaj i wpisz ile ml zebrałeś.
+      Urządzenie obliczy impulsy/ml automatycznie.
+    </p>
+
+    <div class="form-grid" style="max-width:400px">
+      <label>Pompa
+        <select id="cal-pump" style="padding:9px 12px;border-radius:8px;
+          background:var(--bg);border:1px solid var(--border);color:var(--text)">
+          <option value="0">Pompa 0</option>
+          <option value="1">Pompa 1</option>
+          <option value="2">Pompa 2</option>
+          <option value="3">Pompa 3</option>
+        </select>
+      </label>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="calStart()">▶ Start pompy</button>
+      <button class="btn btn-danger"  onclick="calStop()">⏹ Stop</button>
+    </div>
+
+    <div style="margin-top:16px">
+      <p>Impulsy: <span id="cal-pulses">–</span></p>
+      <p id="cal-status" style="margin-top:6px"></p>
+    </div>
+
+    <div class="dose-row" style="margin-top:16px;max-width:300px">
+      <input id="cal-ml" type="number" step="0.1" min="0.1" placeholder="Zebrane ml">
+      <button class="btn btn-primary" onclick="calFinish()">Oblicz</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ LOG -->
+<div id="tab-log" class="tab">
+  <div class="section">
+    <h2>📜 Logi urządzenia</h2>
+    <div id="log-toolbar">
+      <input id="log-filter" type="text" placeholder="Filtruj..." oninput="logApplyFilter()">
+      <span id="ws-badge">WS…</span>
+      <button class="btn btn-ghost" style="flex:none" onclick="logClear()">Wyczyść</button>
+      <label style="flex-direction:row;align-items:center;gap:6px;color:var(--muted);font-size:.82rem">
+        <input type="checkbox" id="log-scroll" checked> auto-scroll
+      </label>
+    </div>
+    <div id="log-box"></div>
+  </div>
+</div>
+
+</main>
+
+<div id="toast"></div>
+
+<script>
+// ── Konfiguracja ────────────────────────────────────────────
+const POLL_INTERVAL = 5000;   // ms
+
+// ── Pomocniki ───────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  event.target.classList.add('active');
+  if (name === 'settings') loadSettings();
+}
+
+function toast(msg, isErr = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show' + (isErr ? ' err' : '');
+  setTimeout(() => el.className = '', 2500);
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({ error: r.statusText }));
+    throw new Error(e.error || r.statusText);
+  }
+  return r.json();
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('pl-PL', { month:'2-digit', day:'2-digit',
+                                      hour:'2-digit', minute:'2-digit' });
+}
+
+// ── Dashboard ────────────────────────────────────────────────
+function renderCards(data) {
+  const container = document.getElementById('pump-cards');
+
+  // Zachowaj wartości ml wpisane przez użytkownika przed przebudową DOM
+  const savedMl = {};
+  (data.pumps || []).forEach(p => {
+    const el = document.getElementById('ml-' + p.idx);
+    if (el) savedMl[p.idx] = el.value;
+  });
+
+  container.innerHTML = '';
+
+  // WiFi / MQTT badges
+  const wb = document.getElementById('wifi-badge');
+  const mb = document.getElementById('mqtt-badge');
+  if (data.wifi_ssid && data.wifi_ssid !== '') {
+    wb.textContent = `📶 ${data.wifi_ssid} (${data.wifi_rssi} dBm)`;
+    wb.className = 'ok';
+  }  if (data.mqtt_connected) {
+    mb.textContent = '📨 MQTT';
+    mb.className = 'ok';
+  } else {
+    mb.textContent = '📨 MQTT off';
+    mb.className = '';
+  }
+  (data.pumps || []).forEach(p => {
+    const pct = Math.min(100, p.ml_day > 0 ? (p.ml_today / p.ml_day) * 100 : 0).toFixed(1);
+    const card = document.createElement('div');
+    card.className = 'card' + (p.running ? ' running' : '') + (!p.enabled ? ' disabled' : '');
+    card.innerHTML = `
+      <div class="card-header">
+        <span class="pump-name">${p.name}</span>
+        <span class="pump-idx">#${p.idx}</span>
+      </div>
+      ${p.running ? '<span class="running-badge">● DOZUJE</span>' : ''}
+      <div class="progress-wrap">
+        <div class="progress-bar" style="width:${pct}%"></div>
+      </div>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-val">${p.ml_today.toFixed(2)}</div>
+          <div class="stat-lbl">ml dziś</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val">${p.ml_day.toFixed(1)}</div>
+          <div class="stat-lbl">ml cel</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val">${p.ml_total.toFixed(1)}</div>
+          <div class="stat-lbl">ml łącznie</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val">${pct}%</div>
+          <div class="stat-lbl">realizacja</div>
+        </div>
+      </div>
+      <div class="dose-row">
+        <input id="ml-${p.idx}" type="number" step="0.1" min="0.1" max="50"
+               value="${(p.ml_day / Math.max(p.doses,1)).toFixed(2)}"
+               placeholder="ml" ${!p.enabled ? 'disabled' : ''}>
+        <button class="btn btn-primary" onclick="manualDose(${p.idx})"
+                ${!p.enabled || p.running ? 'disabled' : ''}>Dawkuj</button>
+      </div>
+      <div class="card-actions">
+        ${p.running ? `<button class="btn btn-danger" onclick="stopPump(${p.idx})">Stop</button>` : ''}
+        <button class="btn btn-ghost" onclick="togglePump(${p.idx}, ${!p.enabled})">
+          ${p.enabled ? 'Wyłącz' : 'Włącz'}
+        </button>
+      </div>
+      <div class="last-dose">Ostatnia dawka: ${fmtDate(p.last_dose)}</div>
+    `;
+    container.appendChild(card);
+
+    // Przywróć wartość ml jeśli użytkownik ją zmienił
+    if (savedMl[p.idx] !== undefined) {
+      const el = document.getElementById('ml-' + p.idx);
+      if (el) el.value = savedMl[p.idx];
+    }
+  });
+
+  document.getElementById('last-update').textContent =
+    'Aktualizacja: ' + new Date().toLocaleTimeString('pl-PL');
+}
+
+async function manualDose(idx) {
+  const ml = parseFloat(document.getElementById('ml-' + idx).value);
+  if (!ml || ml <= 0) { toast('Wpisz ilość ml', true); return; }
+  try {
+    await api('POST', `/api/pump/${idx}/dose`, { ml });
+    toast(`Pompa ${idx}: dozowanie ${ml} ml`);
+  } catch(e) { toast(e.message, true); }
+}
+
+async function stopPump(idx) {
+  try {
+    await api('POST', `/api/pump/${idx}/stop`);
+    toast(`Pompa ${idx}: zatrzymana`);
+  } catch(e) { toast(e.message, true); }
+}
+
+async function togglePump(idx, enable) {
+  try {
+    const cfg = { pumps: [{ idx, enabled: enable }] };
+    await api('POST', '/api/config', cfg);
+    toast(`Pompa ${idx}: ${enable ? 'włączona' : 'wyłączona'}`);
+  } catch(e) { toast(e.message, true); }
+}
+
+async function pollStatus() {
+  try {
+    const data = await api('GET', '/api/status');
+    renderCards(data);
+  } catch(e) {
+    console.warn('Status poll:', e.message);
+  }
+}
+
+// ── Settings ─────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const d = await api('GET', '/api/config');
+
+    const n = d.network || {};
+    document.getElementById('s-ssid').value  = n.ssid  || '';
+    document.getElementById('s-ip').value    = n.ip    || '';
+    document.getElementById('s-gw').value    = n.gw    || '';
+    document.getElementById('s-mhost').value = n.mqtt_host  || '';
+    document.getElementById('s-mport').value = n.mqtt_port  || 1883;
+    document.getElementById('s-muser').value = n.mqtt_user  || '';
+    document.getElementById('s-mtopic').value= n.mqtt_topic || 'reef/dosepump';
+    document.getElementById('s-wuser').value = n.web_user   || 'admin';
+
+    const gen = d.general || {};
+    document.getElementById('s-interval').value = gen.interval_min ?? 15;
+
+    // Pompy
+    const ps = document.getElementById('pump-settings');
+    ps.innerHTML = '';
+    (d.pumps || []).forEach(p => {
+      const row = document.createElement('div');
+      row.style.cssText = 'border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px';
+      row.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <strong>Pompa ${p.idx}</strong>
+          <div class="toggle-wrap">
+            <input type="checkbox" id="p-en-${p.idx}" ${p.enabled ? 'checked' : ''}>
+            <label for="p-en-${p.idx}" style="color:var(--text)">aktywna</label>
+          </div>
+        </div>
+        <div class="form-grid">
+          <label>Nazwa    <input id="p-nm-${p.idx}" type="text" value="${p.name}"></label>
+          <label>ml / dobę <input id="p-ml-${p.idx}" type="number" step="0.1" min="0" value="${p.ml_day}"></label>
+          <label>Dawki / dobę <input id="p-d-${p.idx}" type="number" min="1" max="48" value="${p.doses}"></label>
+          <label>Imp / ml <input id="p-ppm-${p.idx}" type="number" step="0.1" min="1" value="${p.ppm}"></label>
+          <label>Okno od (godz.) <input id="p-ws-${p.idx}" type="number" min="0" max="23" value="${p.win_start ?? 0}"></label>
+          <label>Okno do (godz.) <input id="p-we-${p.idx}" type="number" min="1" max="24" value="${p.win_end ?? 24}"></label>
+        </div>
+      `;
+      ps.appendChild(row);
+    });
+  } catch(e) { toast('Błąd wczytywania: ' + e.message, true); }
+}
+
+async function saveSettings() {
+  const pumps = [];
+  for (let i = 0; i < 4; i++) {
+    const nm  = document.getElementById(`p-nm-${i}`);
+    if (!nm) continue;
+    pumps.push({
+      idx:     i,
+      name:    nm.value,
+      ml_day:    parseFloat(document.getElementById(`p-ml-${i}`).value) || 0,
+      doses:     parseInt(document.getElementById(`p-d-${i}`).value)    || 1,
+      ppm:       parseFloat(document.getElementById(`p-ppm-${i}`).value)|| 200,
+      enabled:   document.getElementById(`p-en-${i}`).checked,
+      win_start: parseInt(document.getElementById(`p-ws-${i}`).value)   || 0,
+      win_end:   parseInt(document.getElementById(`p-we-${i}`).value)   || 24,
+    });
+  }
+
+  const cfg = {
+    general: {
+      interval_min: parseInt(document.getElementById('s-interval').value) || 15,
+    },
+    network: {
+      ssid:       document.getElementById('s-ssid').value,
+      pass:       document.getElementById('s-wpass').value,
+      ip:         document.getElementById('s-ip').value,
+      gw:         document.getElementById('s-gw').value,
+      mqtt_host:  document.getElementById('s-mhost').value,
+      mqtt_port:  parseInt(document.getElementById('s-mport').value) || 1883,
+      mqtt_user:  document.getElementById('s-muser').value,
+      mqtt_pass:  document.getElementById('s-mpass').value,
+      mqtt_topic: document.getElementById('s-mtopic').value,
+      web_user:   document.getElementById('s-wuser').value,
+      web_pass:   document.getElementById('s-wpwd').value,
+      configured: true,
+    },
+    pumps,
+  };
+
+  try {
+    await api('POST', '/api/config', cfg);
+    toast('Ustawienia zapisane ✓');
+  } catch(e) { toast('Błąd: ' + e.message, true); }
+}
+
+async function restartDevice() {
+  if (!confirm('Zrestartować urządzenie?')) return;
+  try {
+    await api('POST', '/api/restart');
+    toast('Restart…');
+  } catch(e) { /* ignore – device restarts */ }
+}
+
+// ── Calibration ──────────────────────────────────────────────
+let calPollTimer = null;
+
+async function calStart() {
+  const idx = document.getElementById('cal-pump').value;
+  try {
+    await api('POST', `/api/calibrate/${idx}/start`);
+    document.getElementById('cal-status').textContent = `Pompa ${idx} pracuje… zbieraj płyn`;
+    // Poll pulses
+    clearInterval(calPollTimer);
+    calPollTimer = setInterval(async () => {
+      try {
+        const r = await api('GET', `/api/pulses/${idx}`);
+        document.getElementById('cal-pulses').textContent = r.pulses;
+      } catch {}
+    }, 1000);
+  } catch(e) { toast(e.message, true); }
+}
+
+async function calStop() {
+  const idx = document.getElementById('cal-pump').value;
+  clearInterval(calPollTimer);
+  try {
+    await api('POST', `/api/pump/${idx}/stop`);
+    document.getElementById('cal-status').textContent = 'Pompa zatrzymana. Wpisz zebraną ilość ml.';
+    // Final pulse read
+    const r = await api('GET', `/api/pulses/${idx}`);
+    document.getElementById('cal-pulses').textContent = r.pulses;
+  } catch(e) { toast(e.message, true); }
+}
+
+async function calFinish() {
+  const idx = document.getElementById('cal-pump').value;
+  const ml  = parseFloat(document.getElementById('cal-ml').value);
+  if (!ml || ml <= 0) { toast('Wpisz zebraną ilość ml', true); return; }
+  try {
+    const r = await api('POST', `/api/calibrate/${idx}/finish`, { ml });
+    document.getElementById('cal-status').textContent =
+      `✓ Kalibracja OK: ${r.ppm.toFixed(2)} imp/ml`;
+    toast(`Pompa ${idx}: ${r.ppm.toFixed(2)} imp/ml`);
+  } catch(e) { toast(e.message, true); }
+}
+
+// ── Log / WebSocket ──────────────────────────────────────────
+const _logLines = [];   // wszystkie odebrane linie
+let   _logWs    = null;
+let   _logReconnTimer = null;
+
+function _logClassify(txt) {
+  const t = txt.toLowerCase();
+  if (t.includes('error') || t.includes('błąd') || t.includes('timeout') || t.includes('failed'))
+    return 'le';
+  if (t.includes('warn') || t.includes('retry') || t.includes('próba'))
+    return 'lw';
+  return 'll';
+}
+
+function _logAppendLine(txt) {
+  _logLines.push(txt);
+  if (_logLines.length > 500) _logLines.shift();
+
+  const filter = (document.getElementById('log-filter') || {}).value || '';
+  if (filter && !txt.toLowerCase().includes(filter.toLowerCase())) return;
+
+  const box = document.getElementById('log-box');
+  if (!box) return;
+  const span = document.createElement('span');
+  span.className = _logClassify(txt);
+  span.textContent = txt + '\n';
+  box.appendChild(span);
+
+  if ((document.getElementById('log-scroll') || {}).checked) {
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+function logApplyFilter() {
+  const filter = document.getElementById('log-filter').value.toLowerCase();
+  const box    = document.getElementById('log-box');
+  box.innerHTML = '';
+  _logLines.forEach(txt => {
+    if (filter && !txt.toLowerCase().includes(filter)) return;
+    const span = document.createElement('span');
+    span.className = _logClassify(txt);
+    span.textContent = txt + '\n';
+    box.appendChild(span);
+  });
+  box.scrollTop = box.scrollHeight;
+}
+
+function logClear() {
+  _logLines.length = 0;
+  document.getElementById('log-box').innerHTML = '';
+}
+
+function logConnect() {
+  if (_logWs) { _logWs.onclose = null; _logWs.close(); }
+  const badge = document.getElementById('ws-badge');
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  _logWs = new WebSocket(`${proto}://${location.host}/ws/log`);
+
+  _logWs.onopen = () => {
+    badge.textContent = '● WS';
+    badge.className = 'ok';
+  };
+  _logWs.onmessage = e => _logAppendLine(e.data);
+  _logWs.onclose = () => {
+    badge.textContent = '✗ WS';
+    badge.className = 'err';
+    clearTimeout(_logReconnTimer);
+    _logReconnTimer = setTimeout(logConnect, 3000);
+  };
+  _logWs.onerror = () => _logWs.close();
+}
+
+// Połącz WebSocket od razu (nie tylko po kliknięciu zakładki)
+logConnect();
+
+// ── Start ────────────────────────────────────────────────────
+pollStatus();
+setInterval(pollStatus, POLL_INTERVAL);
+</script>
+</body>
+</html>
