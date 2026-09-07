@@ -1,11 +1,27 @@
 #include "config_manager.h"
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <ArduinoJson.h>
 
 namespace ConfigManager {
 
+// Ustawienia (sieć/MQTT/kalibracja/rekordy) żyją w NVS, NIE w LittleFS.
+// Powód: `pio run -t uploadfs` kasuje CAŁĄ partycję LittleFS i zastępuje ją
+// obrazem zbudowanym wyłącznie z lokalnego folderu data/ (tam jest tylko
+// index.html) – każdy plik zapisywany w runtime na LittleFS ginie bezpowrotnie
+// przy najbliższym uploadfs. NVS to osobna partycja (patrz partitions_4mb.csv),
+// której nie rusza ani `upload`, ani `uploadfs`.
+static Preferences _prefs;
+static constexpr const char* NVS_NAMESPACE = "cfg";
+
+static void _getStr(const char* key, char* dst, size_t dstSize) {
+    String s = _prefs.getString(key, dst); // dst już zawiera wartość domyślną
+    strlcpy(dst, s.c_str(), dstSize);
+}
+
 // ============================================================
 void begin() {
+    // LittleFS służy już tylko do serwowania panelu WWW (data/index.html)
     if (!LittleFS.begin(true)) {
         Serial.println("LittleFS: błąd montowania – formatowanie...");
         LittleFS.format();
@@ -19,141 +35,113 @@ void begin() {
 
 // ============================================================
 bool load() {
-    if (!LittleFS.exists(CONFIG_FILE)) {
-        Serial.println("ConfigManager: brak pliku – używam domyślnych");
-        // Ustaw domyślne nazwy pomp
-        for (int i = 0; i < NUM_PUMPS; i++) {
-            snprintf(pumpCal[i].name, sizeof(pumpCal[i].name), "Pompa %d", i + 1);
-        }
-        return false;
+    // Domyślne nazwy pomp – ustaw PRZED odczytem (nadpisuje bezużyteczne
+    // "Pompa" bez numeru z domyślnej wartości pola w strukturze); odczyt
+    // i tak użyje tego tylko jako fallback gdy klucz nie istnieje w NVS.
+    for (int i = 0; i < NUM_PUMPS; i++) {
+        snprintf(pumpCal[i].name, sizeof(pumpCal[i].name), "Pompa %d", i + 1);
     }
 
-    File f = LittleFS.open(CONFIG_FILE, "r");
-    if (!f) return false;
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, f);
-    f.close();
-
-    if (err) {
-        Serial.printf("ConfigManager: błąd JSON: %s\n", err.c_str());
-        return false;
-    }
+    _prefs.begin(NVS_NAMESPACE, true); // read-only
+    bool hadData = _prefs.isKey("w_configured");
 
     // ── Sieć ────────────────────────────────────────────────
-    JsonObject net = doc["network"];
-    if (net) {
-        strlcpy(netCfg.ssid,       net["ssid"]        | "",                sizeof(netCfg.ssid));
-        strlcpy(netCfg.password,   net["pass"]        | "",                sizeof(netCfg.password));
-        strlcpy(netCfg.staticIp,   net["ip"]          | "",                sizeof(netCfg.staticIp));
-        strlcpy(netCfg.gateway,    net["gw"]          | "",                sizeof(netCfg.gateway));
-        strlcpy(netCfg.subnet,     net["sn"]          | "255.255.255.0",   sizeof(netCfg.subnet));
-        strlcpy(netCfg.mqttBroker, net["mqtt_host"]   | "",                sizeof(netCfg.mqttBroker));
-        netCfg.mqttPort = net["mqtt_port"] | MQTT_PORT_DEFAULT;
-        strlcpy(netCfg.mqttUser,   net["mqtt_user"]   | "",                sizeof(netCfg.mqttUser));
-        strlcpy(netCfg.mqttPass,   net["mqtt_pass"]   | "",                sizeof(netCfg.mqttPass));
-        strlcpy(netCfg.mqttTopic,  net["mqtt_topic"]  | MQTT_BASE_TOPIC,   sizeof(netCfg.mqttTopic));
-        strlcpy(netCfg.webUser,    net["web_user"]    | "admin",           sizeof(netCfg.webUser));
-        strlcpy(netCfg.webPass,    net["web_pass"]    | "admin",           sizeof(netCfg.webPass));
-        netCfg.configured = net["configured"] | false;
-    }
+    _getStr("w_ssid",   netCfg.ssid,       sizeof(netCfg.ssid));
+    _getStr("w_pass",   netCfg.password,   sizeof(netCfg.password));
+    _getStr("w_ip",     netCfg.staticIp,   sizeof(netCfg.staticIp));
+    _getStr("w_gw",     netCfg.gateway,    sizeof(netCfg.gateway));
+    _getStr("w_sn",     netCfg.subnet,     sizeof(netCfg.subnet));
+    _getStr("w_mhost",  netCfg.mqttBroker, sizeof(netCfg.mqttBroker));
+    netCfg.mqttPort = _prefs.getUShort("w_mport", netCfg.mqttPort);
+    _getStr("w_muser",  netCfg.mqttUser,   sizeof(netCfg.mqttUser));
+    _getStr("w_mpass",  netCfg.mqttPass,   sizeof(netCfg.mqttPass));
+    _getStr("w_mtopic", netCfg.mqttTopic,  sizeof(netCfg.mqttTopic));
+    _getStr("w_wuser",  netCfg.webUser,    sizeof(netCfg.webUser));
+    _getStr("w_wpass",  netCfg.webPass,    sizeof(netCfg.webPass));
+    netCfg.configured = _prefs.getBool("w_configured", netCfg.configured);
 
     // ── Ustawienia ogólne ────────────────────────────────────
-    JsonObject gen = doc["general"];
-    if (gen) {
-        genCfg.pumpIntervalMin = gen["interval_min"] | DEFAULT_PUMP_INTERVAL_MIN;
-        genCfg.ntpEnabled      = gen["ntp"]          | true;
+    genCfg.pumpIntervalMin = _prefs.getUShort("g_interval", genCfg.pumpIntervalMin);
+    genCfg.ntpEnabled      = _prefs.getBool("g_ntp", genCfg.ntpEnabled);
+
+    // ── Kalibracja pomp + rekordy dawkowania ─────────────────
+    char key[16];
+    for (int i = 0; i < NUM_PUMPS; i++) {
+        snprintf(key, sizeof(key), "p%d_ppm", i);
+        pumpCal[i].pulsesPerMl = _prefs.getFloat(key, pumpCal[i].pulsesPerMl);
+        snprintf(key, sizeof(key), "p%d_mld", i);
+        pumpCal[i].mlPerDay = _prefs.getFloat(key, pumpCal[i].mlPerDay);
+        snprintf(key, sizeof(key), "p%d_doses", i);
+        pumpCal[i].dosesPerDay = _prefs.getInt(key, pumpCal[i].dosesPerDay);
+        snprintf(key, sizeof(key), "p%d_en", i);
+        pumpCal[i].enabled = _prefs.getBool(key, pumpCal[i].enabled);
+        snprintf(key, sizeof(key), "p%d_ws", i);
+        pumpCal[i].windowStart = (uint8_t)_prefs.getUChar(key, pumpCal[i].windowStart);
+        snprintf(key, sizeof(key), "p%d_we", i);
+        pumpCal[i].windowEnd = (uint8_t)_prefs.getUChar(key, pumpCal[i].windowEnd);
+        snprintf(key, sizeof(key), "p%d_name", i);
+        _getStr(key, pumpCal[i].name, sizeof(pumpCal[i].name));
+
+        snprintf(key, sizeof(key), "r%d_today", i);
+        doseRec[i].mlToday = _prefs.getFloat(key, doseRec[i].mlToday);
+        snprintf(key, sizeof(key), "r%d_total", i);
+        doseRec[i].mlTotal = _prefs.getFloat(key, doseRec[i].mlTotal);
+        snprintf(key, sizeof(key), "r%d_pulses", i);
+        doseRec[i].pulsesTotal = _prefs.getLong(key, doseRec[i].pulsesTotal);
+        snprintf(key, sizeof(key), "r%d_last", i);
+        doseRec[i].lastDose = (time_t)_prefs.getLong(key, (long)doseRec[i].lastDose);
     }
 
-    // ── Kalibracja pomp ──────────────────────────────────────
-    JsonArray pumps = doc["pumps"].as<JsonArray>();
-    int pi = 0;
-    for (JsonObject p : pumps) {
-        if (pi >= NUM_PUMPS) break;
-        pumpCal[pi].pulsesPerMl = p["ppm"]        | DEFAULT_PULSES_PER_ML;
-        pumpCal[pi].mlPerDay    = p["ml_day"]     | DEFAULT_ML_PER_DAY;
-        pumpCal[pi].dosesPerDay = p["doses"]      | DEFAULT_DAILY_DOSES;
-        pumpCal[pi].enabled     = p["enabled"]    | true;
-        pumpCal[pi].windowStart = p["win_start"]  | (uint8_t)0;
-        pumpCal[pi].windowEnd   = p["win_end"]    | (uint8_t)24;
-        const char* nm = p["name"] | "";
-        if (strlen(nm) > 0) {
-            strlcpy(pumpCal[pi].name, nm, sizeof(pumpCal[pi].name));
-        } else {
-            snprintf(pumpCal[pi].name, sizeof(pumpCal[pi].name), "Pompa %d", pi + 1);
-        }
-        pi++;
-    }
+    _prefs.end();
 
-    // ── Rekordy dawkowania ───────────────────────────────────
-    JsonArray recs = doc["records"].as<JsonArray>();
-    int ri = 0;
-    for (JsonObject r : recs) {
-        if (ri >= NUM_PUMPS) break;
-        doseRec[ri].mlToday    = r["ml_today"]  | 0.0f;
-        doseRec[ri].mlTotal    = r["ml_total"]  | 0.0f;
-        doseRec[ri].pulsesTotal = r["pulses"]   | 0L;
-        doseRec[ri].lastDose   = (time_t)(r["last_dose"] | 0);
-        ri++;
+    if (!hadData) {
+        Serial.println("ConfigManager: brak zapisanej konfiguracji w NVS – używam domyślnych");
+        return false;
     }
-
-    Serial.println("ConfigManager: konfiguracja załadowana");
+    Serial.println("ConfigManager: konfiguracja załadowana z NVS");
     return true;
 }
 
 // ============================================================
 bool save() {
-    JsonDocument doc;
+    _prefs.begin(NVS_NAMESPACE, false);
 
-    JsonObject net = doc["network"].to<JsonObject>();
-    net["ssid"]       = netCfg.ssid;
-    net["pass"]       = netCfg.password;
-    net["ip"]         = netCfg.staticIp;
-    net["gw"]         = netCfg.gateway;
-    net["sn"]         = netCfg.subnet;
-    net["mqtt_host"]  = netCfg.mqttBroker;
-    net["mqtt_port"]  = netCfg.mqttPort;
-    net["mqtt_user"]  = netCfg.mqttUser;
-    net["mqtt_pass"]  = netCfg.mqttPass;
-    net["mqtt_topic"] = netCfg.mqttTopic;
-    net["web_user"]   = netCfg.webUser;
-    net["web_pass"]   = netCfg.webPass;
-    net["configured"] = netCfg.configured;
+    _prefs.putString("w_ssid",   netCfg.ssid);
+    _prefs.putString("w_pass",   netCfg.password);
+    _prefs.putString("w_ip",     netCfg.staticIp);
+    _prefs.putString("w_gw",     netCfg.gateway);
+    _prefs.putString("w_sn",     netCfg.subnet);
+    _prefs.putString("w_mhost",  netCfg.mqttBroker);
+    _prefs.putUShort("w_mport",  netCfg.mqttPort);
+    _prefs.putString("w_muser",  netCfg.mqttUser);
+    _prefs.putString("w_mpass",  netCfg.mqttPass);
+    _prefs.putString("w_mtopic", netCfg.mqttTopic);
+    _prefs.putString("w_wuser",  netCfg.webUser);
+    _prefs.putString("w_wpass",  netCfg.webPass);
+    _prefs.putBool("w_configured", netCfg.configured);
 
-    JsonObject gen = doc["general"].to<JsonObject>();
-    gen["interval_min"] = genCfg.pumpIntervalMin;
-    gen["ntp"]          = genCfg.ntpEnabled;
+    _prefs.putUShort("g_interval", genCfg.pumpIntervalMin);
+    _prefs.putBool("g_ntp",        genCfg.ntpEnabled);
 
-    JsonArray pumps = doc["pumps"].to<JsonArray>();
+    char key[16];
     for (int i = 0; i < NUM_PUMPS; i++) {
-        JsonObject p = pumps.add<JsonObject>();
-        p["name"]      = pumpCal[i].name;
-        p["ppm"]       = pumpCal[i].pulsesPerMl;
-        p["ml_day"]    = pumpCal[i].mlPerDay;
-        p["doses"]     = pumpCal[i].dosesPerDay;
-        p["enabled"]   = pumpCal[i].enabled;
-        p["win_start"] = pumpCal[i].windowStart;
-        p["win_end"]   = pumpCal[i].windowEnd;
+        snprintf(key, sizeof(key), "p%d_ppm", i);   _prefs.putFloat(key, pumpCal[i].pulsesPerMl);
+        snprintf(key, sizeof(key), "p%d_mld", i);   _prefs.putFloat(key, pumpCal[i].mlPerDay);
+        snprintf(key, sizeof(key), "p%d_doses", i); _prefs.putInt(key, pumpCal[i].dosesPerDay);
+        snprintf(key, sizeof(key), "p%d_en", i);    _prefs.putBool(key, pumpCal[i].enabled);
+        snprintf(key, sizeof(key), "p%d_ws", i);    _prefs.putUChar(key, pumpCal[i].windowStart);
+        snprintf(key, sizeof(key), "p%d_we", i);    _prefs.putUChar(key, pumpCal[i].windowEnd);
+        snprintf(key, sizeof(key), "p%d_name", i);  _prefs.putString(key, pumpCal[i].name);
+
+        snprintf(key, sizeof(key), "r%d_today", i);  _prefs.putFloat(key, doseRec[i].mlToday);
+        snprintf(key, sizeof(key), "r%d_total", i);  _prefs.putFloat(key, doseRec[i].mlTotal);
+        snprintf(key, sizeof(key), "r%d_pulses", i); _prefs.putLong(key, doseRec[i].pulsesTotal);
+        snprintf(key, sizeof(key), "r%d_last", i);   _prefs.putLong(key, (long)doseRec[i].lastDose);
     }
 
-    JsonArray recs = doc["records"].to<JsonArray>();
-    for (int i = 0; i < NUM_PUMPS; i++) {
-        JsonObject r = recs.add<JsonObject>();
-        r["ml_today"]  = doseRec[i].mlToday;
-        r["ml_total"]  = doseRec[i].mlTotal;
-        r["pulses"]    = doseRec[i].pulsesTotal;
-        r["last_dose"] = (long)doseRec[i].lastDose;
-    }
-
-    File f = LittleFS.open(CONFIG_FILE, "w");
-    if (!f) {
-        Serial.println("ConfigManager: błąd otwierania pliku do zapisu");
-        return false;
-    }
-    size_t written = serializeJson(doc, f);
-    f.close();
-    Serial.printf("ConfigManager: zapisano %u B\n", written);
-    return written > 0;
+    _prefs.end();
+    Serial.println("ConfigManager: zapisano do NVS");
+    return true;
 }
 
 // ============================================================
@@ -171,8 +159,10 @@ void resetToDefaults() {
         doseRec[i] = DoseRecord{};
         snprintf(pumpCal[i].name, sizeof(pumpCal[i].name), "Pompa %d", i + 1);
     }
-    if (LittleFS.exists(CONFIG_FILE)) LittleFS.remove(CONFIG_FILE);
-    Serial.println("ConfigManager: reset do domyślnych");
+    _prefs.begin(NVS_NAMESPACE, false);
+    _prefs.clear();
+    _prefs.end();
+    Serial.println("ConfigManager: reset do domyślnych (NVS wyczyszczone)");
 }
 
 // ============================================================
@@ -232,6 +222,8 @@ bool applyConfigJson(const String& json) {
             strlcpy(netCfg.staticIp,   net["ip"],          sizeof(netCfg.staticIp));
         if (!net["gw"].isNull())
             strlcpy(netCfg.gateway,    net["gw"],          sizeof(netCfg.gateway));
+        if (!net["sn"].isNull())
+            strlcpy(netCfg.subnet,     net["sn"],          sizeof(netCfg.subnet));
         if (!net["mqtt_host"].isNull())
             strlcpy(netCfg.mqttBroker, net["mqtt_host"],   sizeof(netCfg.mqttBroker));
         if (!net["mqtt_port"].isNull())

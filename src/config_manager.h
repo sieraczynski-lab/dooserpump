@@ -3,13 +3,13 @@
 
 namespace ConfigManager {
 
-    // Montuje LittleFS, tworzy domyślną konfigurację jeśli brak pliku
+    // Montuje LittleFS (panel WWW) – ustawienia same w sobie żyją w NVS
     void begin();
 
-    // Wczytuje konfigurację z CONFIG_FILE → zwraca true przy sukcesie
+    // Wczytuje konfigurację z NVS → zwraca true przy sukcesie (false = brak zapisanej, użyto domyślnych)
     bool load();
 
-    // Zapisuje pełną konfigurację do CONFIG_FILE
+    // Zapisuje pełną konfigurację do NVS (przeżywa `uploadfs`, w odróżnieniu od LittleFS)
     bool save();
 
     // Zapisuje tylko rekordy dawkowania (doseRec[]) – szybkie call z loop()

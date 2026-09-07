@@ -166,10 +166,14 @@
   <!-- Sieć -->
   <div class="section">
     <h2>📡 Sieć WiFi</h2>
+    <p style="margin:0 0 12px;font-size:.9rem;color:var(--muted)">
+      Aktualny adres IP: <strong id="s-current-ip">–</strong>
+    </p>
     <div class="form-grid">
       <label>SSID <input id="s-ssid" type="text" placeholder="Nazwa sieci"></label>
       <label>Hasło WiFi <input id="s-wpass" type="password" placeholder="(bez zmiany)"></label>
-      <label>Statyczne IP <input id="s-ip" type="text" placeholder="np. 192.168.1.50"></label>
+      <label>Statyczne IP <input id="s-ip" type="text" placeholder="puste = DHCP (zalecane)"></label>
+      <label>Maska podsieci <input id="s-sn" type="text" placeholder="255.255.255.0"></label>
       <label>Brama <input id="s-gw" type="text" placeholder="np. 192.168.1.1"></label>
     </div>
   </div>
@@ -337,9 +341,18 @@ function renderCards(data) {
   const wb = document.getElementById('wifi-badge');
   const mb = document.getElementById('mqtt-badge');
   if (data.wifi_ssid && data.wifi_ssid !== '') {
-    wb.textContent = `📶 ${data.wifi_ssid} (${data.wifi_rssi} dBm)`;
-    wb.className = 'ok';
-  }  if (data.mqtt_connected) {
+    wb.textContent = data.ap_mode
+      ? `📶 ${data.wifi_ssid} (tryb AP)`
+      : `📶 ${data.wifi_ssid} (${data.wifi_rssi} dBm)`;
+    wb.className = data.ap_mode ? '' : 'ok';
+  }
+  const curIp = document.getElementById('s-current-ip');
+  if (curIp) {
+    curIp.textContent = data.wifi_ip
+      ? `${data.wifi_ip}${data.ap_mode ? ' (tryb AP)' : ''}`
+      : '–';
+  }
+  if (data.mqtt_connected) {
     mb.textContent = '📨 MQTT';
     mb.className = 'ok';
   } else {
@@ -446,6 +459,7 @@ async function loadSettings() {
     const n = d.network || {};
     document.getElementById('s-ssid').value  = n.ssid  || '';
     document.getElementById('s-ip').value    = n.ip    || '';
+    document.getElementById('s-sn').value    = n.sn    || '';
     document.getElementById('s-gw').value    = n.gw    || '';
     document.getElementById('s-mhost').value = n.mqtt_host  || '';
     document.getElementById('s-mport').value = n.mqtt_port  || 1883;
@@ -509,6 +523,7 @@ async function saveSettings() {
       ssid:       document.getElementById('s-ssid').value,
       pass:       document.getElementById('s-wpass').value,
       ip:         document.getElementById('s-ip').value,
+      sn:         document.getElementById('s-sn').value,
       gw:         document.getElementById('s-gw').value,
       mqtt_host:  document.getElementById('s-mhost').value,
       mqtt_port:  parseInt(document.getElementById('s-mport').value) || 1883,

@@ -44,7 +44,7 @@ constexpr uint8_t  PUMP_PWM_RES    = 10;       // bity (0-1023)
 #define NTP_TIMEZONE  "CET-1CEST,M3.5.0,M10.5.0/3"  // Polska
 
 // ============================================================
-//  MQTT – wartości domyślne (nadpisywane przez LittleFS)
+//  MQTT – wartości domyślne (nadpisywane przez zapisaną konfigurację)
 // ============================================================
 #define MQTT_PORT_DEFAULT   1883
 #define MQTT_KEEPALIVE      60
@@ -52,9 +52,11 @@ constexpr uint8_t  PUMP_PWM_RES    = 10;       // bity (0-1023)
 #define MQTT_HA_PREFIX      "homeassistant"
 
 // ============================================================
-//  KONFIGURACJA – plik JSON w LittleFS
+//  KONFIGURACJA – NVS (Preferences, namespace "cfg"), NIE LittleFS.
+//  LittleFS służy tylko do serwowania panelu WWW (data/index.html) i jest
+//  całkowicie kasowany przez `pio run -t uploadfs` – ustawienia/kalibracja/
+//  rekordy dawkowania w NVS przeżywają to bez zmian (osobna partycja).
 // ============================================================
-#define CONFIG_FILE   "/config.json"
 
 // ============================================================
 //  STAŁE GLOBALNE DOZOWANIA (nadpisywane przez ustawienia WWW)
@@ -88,10 +90,20 @@ struct DoseRecord {
 };
 
 struct NetworkConfig {
-    char   ssid[64]       = "domowa";
-    char   password[64]   = "bikerek760611";
-    char   staticIp[16]   = "192.168.0.14";
-    char   gateway[16]    = "192.168.0.1";
+    // Celowo BEZ żadnych domyślnych danych domowej sieci wpisanych na sztywno
+    // w kodzie – to był relikt z wczesnego developmentu (realne SSID/hasło
+    // w źródłach, do tego re-aplikowane po każdym factory reset/świeżym flashu).
+    // Docelowy przepływ: świeże urządzenie startuje w AP (patrz setupWiFi()
+    // w main.cpp – pusty ssid => tryb AP) i sieć domową wpisuje się raz,
+    // przez panel WWW; stąd trafia do NVS (ConfigManager) i tam zostaje.
+    char   ssid[64]       = "";
+    char   password[64]   = "";
+    // Puste IP/gateway = DHCP (zalecane – patrz help.md). Statyczne IP ma sens
+    // tylko dla konkretnej sieci/routera; po zmianie sieci stary wpis
+    // wskazywałby na martwą bramę i STA nie połączyłoby się mimo poprawnego
+    // SSID/hasła – dlatego setupWiFi() dodatkowo waliduje ip/maskę/bramę.
+    char   staticIp[16]   = "";
+    char   gateway[16]    = "";
     char   subnet[16]     = "255.255.255.0";
     char   mqttBroker[64] = "";
     uint16_t mqttPort     = MQTT_PORT_DEFAULT;
@@ -100,7 +112,7 @@ struct NetworkConfig {
     char   mqttTopic[64]  = MQTT_BASE_TOPIC;
     char   webUser[32]    = "admin";
     char   webPass[32]    = "admin";
-    bool   configured     = true;    // true = użyj domyślnych powyżej (tryb STA), jeśli false to AP z AP_SSID/AP_PASSWORD
+    bool   configured     = false;   // true = spróbuj STA z powyższym ssid/password, false = tryb AP z AP_SSID/AP_PASSWORD
 };
 
 struct GeneralSettings {

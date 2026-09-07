@@ -48,7 +48,7 @@ void setup()
     delay(300);
     Serial.printf("\n\n=== %s v%s ===\n", DEVICE_NAME, FIRMWARE_VERSION);
 
-    // 1. Konfiguracja z LittleFS
+    // 1. Konfiguracja z NVS (LittleFS tylko dla panelu WWW)
     ConfigManager::begin();
     ConfigManager::load();
 
@@ -149,30 +149,55 @@ static void setupWiFi()
     WebServerHandler::wsLogf("WiFi: łączenie z \"%s\"...", netCfg.ssid);
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(DEVICE_NAME);
+    WiFi.setSleep(false); // stabilniejsze połączenie/responsywność niż domyślny modem-sleep
 
-    // Statyczne IP – jeśli skonfigurowane
-    if (strlen(netCfg.staticIp) > 6)
+    // Statyczne IP – tylko jeśli kompletne i spójne z bramą (ip & mask == gw & mask).
+    // Niespójny/nieaktualny wpis (np. po zmianie sieci na dom_IoT) nie blokuje
+    // już asocjacji L2 z martwą konfiguracją L3 – po prostu używamy DHCP.
+    bool useStatic = (strlen(netCfg.staticIp) > 6 && strlen(netCfg.gateway) > 6);
+    IPAddress ip, gw, sn, dns(8, 8, 8, 8);
+    if (useStatic)
     {
-        IPAddress ip, gw, sn, dns(8, 8, 8, 8);
-        if (ip.fromString(netCfg.staticIp) &&
-            gw.fromString(netCfg.gateway) &&
-            sn.fromString(netCfg.subnet))
+        useStatic = ip.fromString(netCfg.staticIp) &&
+                    gw.fromString(netCfg.gateway) &&
+                    sn.fromString(netCfg.subnet) &&
+                    ((uint32_t)ip & (uint32_t)sn) == ((uint32_t)gw & (uint32_t)sn);
+        if (!useStatic)
         {
-            WiFi.config(ip, gw, sn, dns); // dns wymagany przez SNTP (unika deadlocku z AsyncTCP)
+            WebServerHandler::wsLogf("WiFi: statyczne IP %s niespójne z bramą %s/%s – używam DHCP",
+                                     netCfg.staticIp, netCfg.gateway, netCfg.subnet);
         }
     }
-
-    WiFi.begin(netCfg.ssid, netCfg.password);
-
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000UL)
+    if (useStatic)
     {
-        delay(500);
-        Serial.print('.');
+        WiFi.config(ip, gw, sn, dns); // dns wymagany przez SNTP (unika deadlocku z AsyncTCP)
     }
-    Serial.println();
 
-    if (WiFi.status() == WL_CONNECTED)
+    // Kilka prób połączenia zanim uznamy sieć za niedostępną – pojedyncza próba
+    // bywa zawodna zaraz po starcie AP sąsiedniej sieci / routera.
+    constexpr int kMaxAttempts = 3;
+    bool connected = false;
+    for (int attempt = 1; attempt <= kMaxAttempts && !connected; attempt++)
+    {
+        if (attempt > 1)
+        {
+            WebServerHandler::wsLogf("WiFi: próba %d/%d...", attempt, kMaxAttempts);
+            WiFi.disconnect();
+            delay(200);
+        }
+        WiFi.begin(netCfg.ssid, netCfg.password);
+
+        uint32_t start = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - start < 15000UL)
+        {
+            delay(500);
+            Serial.print('.');
+        }
+        Serial.println();
+        connected = (WiFi.status() == WL_CONNECTED);
+    }
+
+    if (connected)
     {
         _wifiConnected = true;
         WebServerHandler::wsLogf("WiFi: OK – IP: %s, RSSI: %d dBm",

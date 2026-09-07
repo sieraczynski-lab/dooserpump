@@ -51,6 +51,62 @@ void begin() {
     Serial.println("PumpController: inicjalizacja OK");
 }
 
+// ── Powód zatrzymania pompy – wpływa tylko na treść logu ─────
+enum class StopReason { Completed, Timeout, Manual, Overridden };
+
+// ── Zatrzymuje pompę idx i – jeśli coś faktycznie dozowała –
+//    dolicza rzeczywiście dostarczoną objętość do doseRec[idx].
+//    Wywoływana z KAŻDEGO miejsca, które może przerwać dozowanie
+//    (timeout, ręczny stop, nowa dawka nadpisująca poprzednią),
+//    żeby dobowy limit (mlToday) nigdy nie pomijał częściowo
+//    wykonanej dawki.
+static void _stopAndAccount(uint8_t idx, StopReason reason) {
+    bool wasActive = _jobs[idx].active;
+
+    detachInterrupt(digitalPinToInterrupt(PUMP_ENC_A_PIN[idx]));
+    ledcWrite(PUMP_PWM_PIN[idx], PWM_MAX);  // active-LOW: HIGH = stop
+    _jobs[idx].active = false;
+
+    if (!wasActive) return; // nic nie było w trakcie – nie ma czego rozliczać
+
+    long pulsesDone = _enc[idx] - _jobs[idx].startCount;
+    float mlActual  = (pulsesDone > 0 && pumpCal[idx].pulsesPerMl > 0.0f)
+                      ? (float)pulsesDone / pumpCal[idx].pulsesPerMl
+                      : 0.0f;
+
+    switch (reason) {
+        case StopReason::Completed:
+            WebServerHandler::wsLogf("Pompa %d: dawka OK – %.2f ml (%ld impulsów)",
+                          idx, mlActual, pulsesDone);
+            break;
+        case StopReason::Timeout:
+            WebServerHandler::wsLogf("Pompa %d: TIMEOUT (%.2f ml / %.2f ml docelowych)",
+                          idx, mlActual, _jobs[idx].mlRequested);
+            break;
+        case StopReason::Manual:
+            WebServerHandler::wsLogf("Pompa %d: zatrzymana ręcznie – %.2f ml z %.2f ml docelowych",
+                          idx, mlActual, _jobs[idx].mlRequested);
+            break;
+        case StopReason::Overridden:
+            WebServerHandler::wsLogf("Pompa %d: przerwana nową dawką – doliczono %.2f ml z poprzedniej",
+                          idx, mlActual);
+            break;
+    }
+
+    if (pulsesDone <= 0) return; // nic realnie nie popłynęło – nie zaśmiecaj rekordów
+
+    doseRec[idx].mlToday     += mlActual;
+    doseRec[idx].mlTotal     += mlActual;
+    doseRec[idx].pulsesTotal += pulsesDone;
+
+    struct tm ti;
+    if (getLocalTime(&ti) && ti.tm_year >= 124) {   // rok >= 2024 → czas zsynchronizowany
+        doseRec[idx].lastDose = mktime(&ti);
+    }
+
+    ConfigManager::saveDoseRecords();
+}
+
 // ============================================================
 void loop() {
     for (int i = 0; i < NUM_PUMPS; i++) {
@@ -62,34 +118,7 @@ void loop() {
 
         if (!done && !timedOut) continue;
 
-        // Zatrzymaj pompę
-        detachInterrupt(digitalPinToInterrupt(PUMP_ENC_A_PIN[i]));
-        ledcWrite(PUMP_PWM_PIN[i], PWM_MAX);  // active-LOW: HIGH = stop
-        _jobs[i].active = false;
-
-        float mlActual = pumpCal[i].pulsesPerMl > 0.0f
-                         ? (float)pulsesDone / pumpCal[i].pulsesPerMl
-                         : _jobs[i].mlRequested;
-
-        if (timedOut && !done) {
-            WebServerHandler::wsLogf("Pompa %d: TIMEOUT (%.2f ml / %.2f ml docelowych)",
-                          i, mlActual, _jobs[i].mlRequested);
-        } else {
-            WebServerHandler::wsLogf("Pompa %d: dawka OK – %.2f ml (%ld impulsów)",
-                          i, mlActual, pulsesDone);
-        }
-
-        // Aktualizuj rekordy
-        doseRec[i].mlToday     += mlActual;
-        doseRec[i].mlTotal     += mlActual;
-        doseRec[i].pulsesTotal += pulsesDone;
-
-        struct tm ti;
-        if (getLocalTime(&ti) && ti.tm_year >= 124) {   // rok >= 2024 → czas zsynchronizowany
-            doseRec[i].lastDose = mktime(&ti);
-        }
-
-        ConfigManager::saveDoseRecords();
+        _stopAndAccount(i, (timedOut && !done) ? StopReason::Timeout : StopReason::Completed);
     }
 }
 
@@ -98,7 +127,7 @@ void dose(uint8_t idx, float ml) {
     if (idx >= NUM_PUMPS) return;
     if (ml <= 0.0f) return;
 
-    if (_jobs[idx].active) stop(idx);
+    if (_jobs[idx].active) _stopAndAccount(idx, StopReason::Overridden);
 
     long targetPulses = (pumpCal[idx].pulsesPerMl > 0.0f)
                         ? (long)(ml * pumpCal[idx].pulsesPerMl)
@@ -127,9 +156,7 @@ void dose(uint8_t idx, float ml) {
 // ============================================================
 void stop(uint8_t idx) {
     if (idx >= NUM_PUMPS) return;
-    detachInterrupt(digitalPinToInterrupt(PUMP_ENC_A_PIN[idx]));
-    ledcWrite(PUMP_PWM_PIN[idx], PWM_MAX);  // active-LOW: HIGH = stop
-    _jobs[idx].active = false;
+    _stopAndAccount(idx, StopReason::Manual);
 }
 
 void stopAll() {

@@ -91,8 +91,11 @@ static void _handleStatus(AsyncWebServerRequest* req) {
         doc["time"] = buf;
     }
 
-    doc["wifi_ssid"] = WiFi.SSID();
-    doc["wifi_ip"]   = WiFi.localIP().toString();
+    bool apMode = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA);
+    doc["ap_mode"]   = apMode;
+    doc["wifi_ssid"] = apMode ? String(AP_SSID) : WiFi.SSID();
+    // W trybie AP pokaż adres AP (192.168.4.1) – localIP() byłby wtedy pusty/0.0.0.0
+    doc["wifi_ip"]   = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
     doc["wifi_rssi"] = WiFi.RSSI();
     doc["mqtt_connected"] = MqttHandler::isConnected();
 
@@ -289,6 +292,26 @@ static void _handleOtaUpload(AsyncWebServerRequest* req,
     }
 }
 
+// ── GET /health – diagnostyka bez autoryzacji, działa też w AP ──
+// Celowo poza /api/ i bez hasła: ma pomóc zdiagnozować problem z
+// siecią/panelem nawet gdy reszta strony/API nie odpowiada.
+static void _handleHealth(AsyncWebServerRequest* req) {
+    JsonDocument doc;
+    doc["fw"]           = FIRMWARE_VERSION;
+    doc["uptime_s"]     = millis() / 1000;
+    doc["free_heap"]    = esp_get_free_heap_size();
+    doc["min_free_heap"]= esp_get_minimum_free_heap_size();
+    doc["ap_mode"]      = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA);
+    doc["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
+    doc["wifi_ssid"]    = netCfg.ssid;
+    doc["sta_ip"]       = WiFi.localIP().toString();
+    doc["ap_ip"]        = WiFi.softAPIP().toString();
+
+    AsyncResponseStream* resp = req->beginResponseStream("application/json");
+    serializeJson(doc, *resp);
+    req->send(resp);
+}
+
 // ── GET /api/pulses/{id} – aktualny licznik impulsów ──────────
 static void _handlePulses(AsyncWebServerRequest* req) {
     if (!_auth(req)) return;
@@ -320,11 +343,19 @@ void begin() {
         req->send(LittleFS, "/index.html", "text/html");
     });
 
+    // ── config.json NIE wolno serwować statycznie – zawiera hasło ────
+    // WiFi/MQTT w czystym tekście; frontend i tak używa /api/config
+    // (które hasła pomija). Musi być zarejestrowane PRZED serveStatic().
+    _server.on("/config.json", HTTP_GET, [](AsyncWebServerRequest* req) {
+        req->send(404, "application/json", "{\"error\":\"Not found\"}");
+    });
+
     // ── Pozostałe pliki statyczne z LittleFS (bez auth) ─────
     _server.serveStatic("/", LittleFS, "/")
            .setDefaultFile("index.html");
 
     // ── REST API ──────────────────────────────────────────────
+    _server.on("/health",     HTTP_GET, _handleHealth); // bez auth, patrz niżej
     _server.on("/api/status", HTTP_GET, _handleStatus);
     _server.on("/api/config", HTTP_GET, _handleGetConfig);
     _server.on("/api/restart", HTTP_POST, _handleRestart);
